@@ -2,6 +2,7 @@ package com.github.cloudgyb.http.server;
 
 import io.netty.buffer.ByteBufHolder;
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.multipart.FileUpload;
 
 import java.util.List;
 import java.util.Map;
@@ -32,6 +33,21 @@ public interface NettyRequest {
 
     // Get request body
     ByteBufHolder body();
+
+    /**
+     * Check if the request is multipart
+     *
+     * @return true if the request is multipart, false otherwise
+     */
+    boolean isMultipart();
+
+    /**
+     * Get file by name, only works for multipart request
+     *
+     * @param name The name of the form field
+     * @return The file, or null if not found
+     */
+    FileUpload getFileUpload(String name);
 
     // Destroy the request
     void destroy();

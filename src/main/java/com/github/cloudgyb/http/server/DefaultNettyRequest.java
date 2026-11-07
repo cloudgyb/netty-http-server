@@ -1,12 +1,11 @@
 package com.github.cloudgyb.http.server;
 
 import io.netty.buffer.ByteBufHolder;
-import io.netty.buffer.DefaultByteBufHolder;
-import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.codec.http.multipart.Attribute;
+import io.netty.handler.codec.http.multipart.FileUpload;
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder;
 import io.netty.handler.codec.http.multipart.InterfaceHttpData;
 
@@ -85,6 +84,24 @@ public class DefaultNettyRequest implements NettyRequest {
     @Override
     public ByteBufHolder body() {
         return body;
+    }
+
+    @Override
+    public boolean isMultipart() {
+        return postRequestDecoder != null && postRequestDecoder.isMultipart();
+    }
+
+    @Override
+    public FileUpload getFileUpload(String name) {
+        if (isMultipart()) {
+            InterfaceHttpData bodyHttpData = postRequestDecoder.getBodyHttpData(name);
+            if (bodyHttpData != null) {
+                if (bodyHttpData instanceof FileUpload fileUpload) {
+                    return fileUpload;
+                }
+            }
+        }
+        return null;
     }
 
     public void setBody(ByteBufHolder body) {

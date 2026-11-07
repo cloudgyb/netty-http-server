@@ -6,6 +6,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.codec.http.multipart.FileUpload;
 import io.netty.handler.logging.LoggingHandler;
 import org.junit.After;
 import org.junit.Assert;
@@ -182,4 +183,159 @@ public class HttpServerHandlerTest {
 
         embeddedChannel.writeInbound(buffer);
     }
+
+
+    @Test
+    public void testPostMultipartBody() {
+        embeddedChannel.pipeline()
+                .addLast(new SimpleChannelInboundHandler<NettyRequest>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, NettyRequest msg) {
+                        Assert.assertEquals("test", msg.getQueryParam("name"));
+                        Assert.assertEquals("123", msg.getQueryParam("age"));
+                        Assert.assertEquals(0, msg.body().content().readableBytes());
+                        Assert.assertEquals("value1", msg.getParam("param1"));
+                        Assert.assertEquals("value2", msg.getParam("param2"));
+                        Assert.assertNull(msg.getParam("param3"));
+                    }
+                });
+        String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        String contentType = "multipart/form-data; boundary=" + boundary;
+        // param1
+        String bodyBuilder = "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"param1\"\r\n\r\n" +
+                "value1\r\n" +
+                // param2
+                "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"param2\"\r\n\r\n" +
+                "value2\r\n" +
+                // end
+                "--" + boundary + "--\r\n";
+        byte[] body = bodyBuilder.getBytes(StandardCharsets.UTF_8);
+
+        ByteBuf buffer = Unpooled.buffer();
+        buffer.writeCharSequence("POST /upload?name=test&age=123 HTTP/1.1\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Host: test.com\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Content-Type: " + contentType + "\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence(String.format("Content-Length: %d\r\n", body.length), StandardCharsets.UTF_8);
+        buffer.writeCharSequence("\r\n", StandardCharsets.UTF_8);
+        buffer.writeBytes(body);
+
+        embeddedChannel.writeInbound(buffer);
+    }
+
+    @Test
+    public void testPostMultipartBodyWithFile() {
+        embeddedChannel.pipeline()
+                .addLast(new SimpleChannelInboundHandler<NettyRequest>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, NettyRequest msg) {
+                        Assert.assertTrue(msg.isMultipart());
+                        Assert.assertEquals("test", msg.getQueryParam("name"));
+                        Assert.assertEquals("123", msg.getQueryParam("age"));
+                        Assert.assertEquals(0, msg.body().content().readableBytes());
+                        // form-data 属性
+                        Assert.assertEquals("value1", msg.getParam("param1"));
+                        Assert.assertEquals("value2", msg.getParam("param2"));
+                        Assert.assertNull(msg.getParam("param3"));
+                        // 文件上传
+                        try {
+                            FileUpload fileUpload = msg.getFileUpload("file");
+                            Assert.assertNotNull(fileUpload);
+                            String content = fileUpload.content().toString(StandardCharsets.UTF_8);
+                            Assert.assertEquals("hello world\nthis is file content", content);
+                        } finally {
+                            msg.destroy();
+                        }
+                    }
+                });
+        String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        String contentType = "multipart/form-data; boundary=" + boundary;
+        String fileContent = "hello world\nthis is file content";
+        // param1
+        String bodyBuilder = "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"param1\"\r\n\r\n" +
+                "value1\r\n" +
+                // param2
+                "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"param2\"\r\n\r\n" +
+                "value2\r\n" +
+                // file
+                "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n" +
+                "Content-Type: text/plain\r\n\r\n" +
+                fileContent + "\r\n" +
+                // end
+                "--" + boundary + "--\r\n";
+        byte[] body = bodyBuilder.getBytes(StandardCharsets.UTF_8);
+
+        ByteBuf buffer = Unpooled.buffer();
+        buffer.writeCharSequence("POST /upload?name=test&age=123 HTTP/1.1\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Host: test.com\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Content-Type: " + contentType + "\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence(String.format("Content-Length: %d\r\n", body.length), StandardCharsets.UTF_8);
+        buffer.writeCharSequence("\r\n", StandardCharsets.UTF_8);
+        buffer.writeBytes(body);
+
+        embeddedChannel.writeInbound(buffer);
+    }
+
+    @Test
+    public void testPostMultipartLargeFileUpload() {
+        final int fileSize = 5 * 1024 * 1024;
+        final byte[] fileContent = new byte[fileSize];
+        for (int i = 0; i < fileSize; i++) {
+            fileContent[i] = (byte) (i % 256);
+        }
+
+        embeddedChannel.pipeline()
+                .addLast(new SimpleChannelInboundHandler<NettyRequest>() {
+                    @Override
+                    protected void channelRead0(ChannelHandlerContext ctx, NettyRequest msg) {
+                        Assert.assertTrue(msg.isMultipart());
+                        // 混合 form-data 属性
+                        Assert.assertEquals("value1", msg.getParam("param1"));
+                        try {
+                            FileUpload fileUpload = msg.getFileUpload("file");
+                            Assert.assertNotNull(fileUpload);
+                            Assert.assertEquals("bigfile.bin", fileUpload.getFilename());
+                            Assert.assertEquals(fileSize, fileUpload.length());
+                            // 大文件应溢出到磁盘
+                            Assert.assertFalse("large file should be spilled to disk", fileUpload.isInMemory());
+                            // 校验文件内容完整无截断
+                            ByteBuf content = fileUpload.content();
+                            byte[] actual = new byte[content.readableBytes()];
+                            content.getBytes(content.readerIndex(), actual);
+                            Assert.assertArrayEquals(fileContent, actual);
+                        } finally {
+                            msg.destroy();
+                        }
+                    }
+                });
+
+        String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        String contentType = "multipart/form-data; boundary=" + boundary;
+        byte[] prefix = ("--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"param1\"\r\n\r\n" +
+                "value1\r\n" +
+                "--" + boundary + "\r\n" +
+                "Content-Disposition: form-data; name=\"file\"; filename=\"bigfile.bin\"\r\n" +
+                "Content-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = ("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8);
+        int bodyLength = prefix.length + fileContent.length + suffix.length;
+
+        ByteBuf buffer = Unpooled.buffer();
+        buffer.writeCharSequence("POST /upload?name=test&age=123 HTTP/1.1\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Host: test.com\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Content-Type: " + contentType + "\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("Content-Length: " + bodyLength + "\r\n", StandardCharsets.UTF_8);
+        buffer.writeCharSequence("\r\n", StandardCharsets.UTF_8);
+        buffer.writeBytes(prefix);
+        buffer.writeBytes(fileContent);
+        buffer.writeBytes(suffix);
+
+        embeddedChannel.writeInbound(buffer);
+    }
+
+
 }
